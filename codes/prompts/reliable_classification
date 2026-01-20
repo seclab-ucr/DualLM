@@ -1,0 +1,160 @@
+I want you to act as a Linux kernel security patch expert, who is great at analyzing Linux security patches. A linux kernel patch is composed of commit title, message and diff.Commit diff is the differences for the patched files between the time when you are unpatched and the time when they are patched. I need your help to tell me if its commit title, message and diffs can contain reliable hints to tell us its type of the bug fixed by the patch. 
+I will give you commit title, commit message, commit diff and three lines around diff as context. 
+I hope that you can first look at commit title and commit message, since those descriptions can contain explict or implict hints about the bug type;
+and then commit diff and its context, which can fall into some common patch patterns(listed below). 
+There are three bug types that I care: use-after-free, memory out-of-bounds, and non-uaf-oob(including null pointer dereference, use before initalization, memory leak, missing permission check and others). 
+
+Memory-out-of-bounds occurs when the memory accessing is out of the valid range. Its common patch pattern is to add boundary check and reset the size of the allocated memory.
+Use-after-free occurs when the used memory is already freed in another place, one common case is that the memory is freed in user-space. Its common patch pattern is to nullify the pointer or add lock/unlock operations.
+Null pointer derference occurs when the null pointer is derferenced. Its common patch pattern is to add a check to see if the pointer is null.
+Memory leak occurs when the memory is allocated but not freed. Its common patch pattern is to add a free function for a condition.
+Use-before-initlizaiton occurs when use a variable which is not initalized. Its common patch pattern is to initalize the variable.
+There are also other bug types which do not fall into the above bug types.
+
+Below are examples that help you learn this:
+
+Commit #1:
+Commit title: yam: fix a memory leak in yam_siocdevprivate()
+Commit message: ym needs to be free when ym->cmd != SIOCYAMSMCS.
+Commit diff:
+--- a/drivers/net/hamradio/yam.c
++++ b/drivers/net/hamradio/yam.c
+@@ -950,9 +950,7 @@ static int yam_siocdevprivate(struct net_device *dev, struct ifreq *ifr, void __
+ 		ym = memdup_user(data, sizeof(struct yamdrv_ioctl_mcs));
+ 		if (IS_ERR(ym))
+ 			return PTR_ERR(ym);
+-		if (ym->cmd != SIOCYAMSMCS)
+-			return -EINVAL;
+-		if (ym->bitrate > YAM_MAXBITRATE) {
++		if (ym->cmd != SIOCYAMSMCS || ym->bitrate > YAM_MAXBITRATE) {
+ 			kfree(ym);
+ 			return -EINVAL;
+ 		}
+Analysis: 
+(1) Commit title claims that it fixes a memory leak bug
+(2) The patch diff changes the condition for kfree(ym), which means that before the patch, it will not execute kfree(ym) on some conditions; but now under same conditions, it can execute kfree(ym). It matches the "adding free function for a condition" patch pattern for memory leak.
+Contains reliable hints about the bug type: yes; the bug type is non-uaf-oob(memory leak).
+
+Commit #2:
+Commit title: hv_netvsc: Add check for kvmalloc_array
+Commit message: As the potential failure of the kvmalloc_array(),it should be better to check and restore the 'data' if fails in order to avoid the dereference of the NULL pointer.
+Commit diff:
+--- a/drivers/net/hyperv/netvsc_drv.c
++++ b/drivers/net/hyperv/netvsc_drv.c
+@@ -1587,6 +1587,9 @@ static void netvsc_get_ethtool_stats(struct net_device *dev,
+ 	pcpu_sum = kvmalloc_array(num_possible_cpus(),
+ 				  sizeof(struct netvsc_ethtool_pcpu_stats),
+ 				  GFP_KERNEL);
++	if (!pcpu_sum)
++		return;
++
+ 	netvsc_get_pcpu_stats(dev, pcpu_sum);
+ 	for_each_present_cpu(cpu) {
+ 		struct netvsc_ethtool_pcpu_stats *this_sum = &pcpu_sum[cpu];
+Analysis:
+(1) Commit message says "to avoid the dereference of the NULL pointer"
+(2) The patch diff add a check to see if pcpu_sum is null and pcpu_sum will be dereferenced in "netvsc_get_pcpu_stats(dev, pcpu_sum)", which avoids the dereference to a null pointer. It matches the "add a check to see if the pointer is null" patch pattern for null pointer dereference.
+Contains reliable hints about the bug type: yes; the bug type is non-uaf-oob(null pointer dereference).
+
+Commit #3:
+Commit title: nfc: st21nfca: Fix potential buffer overflows in EVT_TRANSACTION
+Commit message: It appears that there are some buffer overflows in EVT_TRANSACTION. This happens because the length parameters that are passed to memcpy come directly from skb->data and are not guarded in any way.
+Commit diff:
+--- a/drivers/nfc/st21nfca/se.c
++++ b/drivers/nfc/st21nfca/se.c
+@@ -316,6 +316,11 @@ int st21nfca_connectivity_event_received(struct nfc_hci_dev *hdev, u8 host,
+ 			return -ENOMEM;
+ 
+ 		transaction->aid_len = skb->data[1];
++
++		/* Checking if the length of the AID is valid */
++		if (transaction->aid_len > sizeof(transaction->aid))
++			return -EINVAL;
++
+ 		memcpy(transaction->aid, &skb->data[2],
+ 		       transaction->aid_len);
+ 
+@@ -325,6 +330,11 @@ int st21nfca_connectivity_event_received(struct nfc_hci_dev *hdev, u8 host,
+ 			return -EPROTO;
+ 
+ 		transaction->params_len = skb->data[transaction->aid_len + 3];
++
++		/* Total size is allocated (skb->len - 2) minus fixed array members */
++		if (transaction->params_len > ((skb->len - 2) - sizeof(struct nfc_evt_transaction)))
++			return -EINVAL;
++
+ 		memcpy(transaction->params, skb->data +
+ 		       transaction->aid_len + 4, transaction->params_len);
+Analysis:
+(1) Commit title says it fix buffer overflows, and commit message says the length parameters are not "guarded", which means that the length parameters are not checked.
+(2) The patch adds a check to see if transaction->aid_len is bigger than sizeof(transaction->aid), and if yes, it returns. Since "memcpy(transaction->aid, &skb->data[2],transaction->aid_len)" is executed after the check, it is to ensure that the size of memory is copied into transaction->aid is not bigger than the valid size of transaction->aid. So the patch avoids access to the memory that is out of the bound of transaction->aid, so the patch is memory-out-of-bounds bug.The patch matches the adding boundary checking patch pattern for memory-out-of-bounds.
+Contains reliable hints about the bug type: yes; the bug type is memory out-of-bounds access.
+
+Commit #4:
+Commit title: ksmbd: fix use-after-free bug in smb2_tree_disconect
+Commit message: smb2_tree_disconnect() freed the struct ksmbd_tree_connect,but it left the dangling pointer. It can be accessed again under compound requests.
+Commit diff:
+--- a/fs/ksmbd/smb2pdu.c
++++ b/fs/ksmbd/smb2pdu.c
+@@ -2057,6 +2057,7 @@ int smb2_tree_disconnect(struct ksmbd_work *work)
+ 
+ 	ksmbd_close_tree_conn_fds(work);
+ 	ksmbd_tree_conn_disconnect(sess, tcon);
++	work->tcon = NULL;
+ 	return 0;
+ }
+Analysis:
+(1) Commit title says it fixes a use-after-free bug
+(2) The patch diff sets work->tcon to NULL after ksmbd_tree_conn_disconnect(), which matches the pointer nullification patch pattern for use-after-free.
+Contains reliable hints about the bug type: yes; the bug type is use-after-free.
+
+Commit #5:
+Commit title: io_uring: fix uninitialized field in rw io_kiocb
+Commit message: io_rw_init_file does not initialize kiocb->private, so when iocb_bio_iopoll reads kiocb->private it can contain uninitialized data.
+Commit diff:
+--- a/fs/io_uring.c
++++ b/fs/io_uring.c
+@@ -3783,6 +3783,7 @@ static int io_rw_init_file(struct io_kiocb *req, fmode_t mode)
+ 		if (!(kiocb->ki_flags & IOCB_DIRECT) || !file->f_op->iopoll)
+ 			return -EOPNOTSUPP;
+ 
++		kiocb->private = NULL;
+ 		kiocb->ki_flags |= IOCB_HIPRI | IOCB_ALLOC_CACHE;
+ 		kiocb->ki_complete = io_complete_rw_iopoll;
+ 		req->iopoll_completed = 0;
+Analysis:
+(1) Commit title says it fixes an uninitialized field
+(2) The patch diff sets kiocb->private to NULL, which matches the variable initalization patch pattern for use-before-initlizaiton.
+Contains reliable hints about the bug type: yes; non-uaf-oob(use-before-initlizaiton).
+
+Commit #6:
+Commit title: NFSD: Protect against send buffer overflow in NFSv2 READDIR
+Commit message: Restore the previous limit on the @count argument to prevent a buffer overflow attack.
+Commit diff:
+@@ -567,12 +567,11 @@ static void nfsd_init_dirlist_pages(struct svc_rqst *rqstp,
+ 	struct xdr_buf *buf = &resp->dirlist;
+ 	struct xdr_stream *xdr = &resp->xdr;
+ 
+-	count = clamp(count, (u32)(XDR_UNIT * 2), svc_max_payload(rqstp));
+-
+ 	memset(buf, 0, sizeof(*buf));
+ 
+ 	/* Reserve room for the NULL ptr & eof flag (-2 words) */
+-	buf->buflen = count - XDR_UNIT * 2;
++	buf->buflen = clamp(count, (u32)(XDR_UNIT * 2), (u32)PAGE_SIZE);
++	buf->buflen -= XDR_UNIT * 2;
+ 	buf->pages = rqstp->rq_next_page;
+ 	rqstp->rq_next_page++;
+Analysis:
+(1) Commit title says it fixes a buffer overflow
+(2) The patch diff changes the calculation of buf-buflen, which is the length of the buffer. It matches the memory size resetting patch pattern for memory-out-of-bounds.
+Contains reliable hints about the bug type: yes;the bug type is memory out-of-bounds access.
+
+Be careful, the commit diff and its context may not fall into above patch patterns; in this case, you should understand its diff and context to see if they can contain reliable hints about the bug type.
+Please be sure that your response follows
+"Analysis:
+.....
+Contains reliable hints about the bug type: yes/no;(if yes, also tell the bug type)."
+Be careful: if it contains the hints for two or more bug types, you should say no; if you are not 100% sure about if there are reliable hints about the bug type, you should say no; if there are conflicts between commit descriptions(commit title and message) and commit diff, please prioritize commit diff, and if commit diff can not provide certain hints, you should say no.
+Please analyse it step by step accoding to the above methods. 
+Here is the commit that I would like you to analyze it:

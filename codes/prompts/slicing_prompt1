@@ -1,0 +1,61 @@
+I want you to act as a Linux kernel security patch expert, who is great at analyzing Linux security patches. A linux kernel patch is composed of commit title, message and diff.Commit diff is the differences for the patched files between the time when you are unpatched and the time when they are patched. I need your help to tell me the bug type of a give patch. I will give you commit diff and three lines around diff as context. I hope that you can first look at commit title and commit message, and then commit diff and its context; you can try to understand the root cause of the bugs fixed by the patch. There are six possible bug types: use-after-free, memory out-of-bounds, memory leak, and others(non-uaf-oob). You can choose one of bug types as answer. Please analyze the patch step by step, and then tell me which bug type. 
+
+Memory-out-of-bounds occurs when the memory accessing is out of the valid range.
+Use-after-freeoccurs when the used memory is already freed in another place, one common case is that the memory is freed in user-space.
+
+                        
+For each patch, I will give you commit title, message, two code snippets for each patched file: removed codes (each line is starting with "-") and its code context (backward data dependence slicing, starting "␌"; forward data dependence slicing, starting with "␎"); added codes(starting with "+") and its code context(backward data dependence slicing, starting "␜"; forward data dependence slicing, starting with "␞").
+Data dependence slicings are the codes which have the data dependence relationships with codes inside the added or removed codes. Data depdence relationships include: a source code lines uses a variable defined in a previous line; a source code line defines a variable that is used later in anothe rline;a source code linedefines a variable that is defined again later in another line. Forward/backward is to describe the direction of the slicing line for the patch diff lines. Data dependence slicing provides the code context for the added/removed codes, which help to understand the definitions and uses of variables in the added/removed codes.
+You should look at slicing lines and diff lines carefully to understand the patch.
+
+Below are examples that help you learn this:
+
+Commit #1:
+Commit title: nfc: st21nfca: Fix potential buffer overflows in EVT_TRANSACTION
+Commit message: It appears that there are some buffer overflows in EVT_TRANSACTION. This happens because the length parameters that are passed to memcpy come directly from skb->data and are not guarded in any way.
+It has no removed codes.
+Added codes and its code context for drivers/nfc/st21nfca/se.c:
+␜ transaction = device_managed_memory_allocation(dev, skb->len - 2, GFP_KERNEL);
+␜ transaction->aid_len = skb->data[1];
++ if (transaction->aid_len > sizeof(transaction->aid))
++ return -EINVAL;
+␜ memory_copy(transaction->aid, &skb->data[2],
+␜ transaction->aid_len);
+␞ if (skb->data[transaction->aid_len + 2] !=
+␜ transaction->params_len = skb->data[transaction->aid_len + 3];
++ if (transaction->params_len > ((skb->len - 2) - sizeof(struct nfc_evt_transaction)))
++ return -EINVAL;
+␞ memory_copy(transaction->params, skb->data +
+␞ transaction->aid_len + 4, transaction->params_len);
+
+Analysis:
+(1) Commit title says it fix buffer overflows, and commit message says the length parameters are not "guarded", which means that the length parameters are not checked.
+(2) The patch is two add two "if" checks. The forward data dependence for added codes shows that the if transaction->aid_len is bigger than sizeof(transaction->aid)),  "memory_copy(transaction->aid, &skb->data[2],transaction->aid_len);" will not be executed. "memory_copy()" is to copy the size(transaction->aid_len) of data from &skb->data[2] to transaction->aid. So the patch is to avoid to copy memory into the area which is out of the bounds of transaction->aid. So, the bug type is memory out-of-bounds.
+Bug type: memory out-of-bounds
+
+
+Commit #2:
+Commit title: yam: fix a memory leak in yam_siocdevprivate()
+Commit message: ym needs to be free when ym->cmd != SIOCYAMSMCS.
+Removed codes and its code context for drivers/net/hamradio/yam.c:
+␌ ym = memdup_user(data, sizeof(struct yamdrv_ioctl_mcs));
+- if (ym->cmd != SIOCYAMSMCS)
+- return -EINVAL;
+- if (ym->bitrate > YAM_MAXBITRATE) {
+␎ kfree(ym);
+Added codes and its code context for drivers/net/hamradio/yam.c:
++ if (ym->cmd != SIOCYAMSMCS || ym->bitrate > YAM_MAXBITRATE) {
+␞   kfree(ym);
+
+Analysis: 
+(1) Commit title claims that it fixes a memory leak bug
+(2) Compared the removed codes and addedcodes, the main different is to modify the conditions inside "if". The forward data dependence for added codes shows that the "if (ym->cmd != SIOCYAMSMCS || ym->bitrate > YAM_MAXBITRATE)" controls if "kfree(ym)" will be executed, which is to free memory. However, inside the removed codes, "if (ym->cmd != SIOCYAMSMCS)" is meet, then it will return. After the patch, for "if (ym->cmd != SIOCYAMSMCS)", "kfree(ym)" is also executed to free memory. So, it is neither use-after-free nor out-of-bounds. So it is other bug type.
+Bug type: other
+
+Please analyse it step by step accoding to the above methods. Then tell me the bug type of the given patch. 
+Please give the results in the below json format:
+{
+"Analysis":"",
+"bug type":"OOB/UAF/OTHER"
+}
+Here is the commit that I would like you to analyze it:

@@ -1,0 +1,18 @@
+I want you to act as an expert who has proven experience in Linux kernel development, understand all of functions in linux kernel, including the definitions, implementation details of all functions from Linux kernel source codes. I will give you several function names from Linux kernel, and I hope that you can give new names for given functions according to the corresponding memory operation by the function.
+
+According to function names, you should try to understand if there are major memory operations, such as, memory allocation, memory free, memory read, memory write, memory map, memory copy,reference count increase/decrease. If you identify such memory operations, please rename the function according to such memory operations. If no such memory operation identified, just preserve original name. 
+    
+Here are some examples that you can learn:
+Function #1:
+Original Name: get_user_pages_fast
+Analysis: This function is used to map the memory from user space into kernel address space.
+New Name: user_space_memory_map_kernel
+
+ 
+Function #2:
+Original Name: l2cap_chan_hold_unless_zero
+Analysis: This function is used to increase the reference counter if the current count is not zero.
+New Name: increase_reference_count_if_not_zero
+
+Please analyse it step by step accoding to the above methods. Then tell me the new function name 
+Here is the Linux kernel function that I would like you to analyze it:
